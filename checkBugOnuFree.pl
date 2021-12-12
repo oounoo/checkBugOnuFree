@@ -8,7 +8,7 @@ use utf8;
 use HTTP::Tiny;
 use Time::HiRes 'time';
 
-my $VERSION=0.2;
+my $VERSION=0.3;
 
 my $lanUrl='http://212.27.38.253:8095/fixed/1G';
 my $wanUrl='http://scaleway.testdebit.info/1G/1G.iso';
@@ -94,15 +94,18 @@ $httpClient->{timeout}=10;
 my $internetSpeed=1024 ** 3 / getDlTime($wanUrl);
 print '  --> '.readableDlSpeed($internetSpeed)."\n\n";
 
-if($internetSpeed < 20 * 1024 ** 2) {
+my $internetSpeedMB=$internetSpeed/(1024 ** 2);
+if($internetSpeedMB < 20) {
   print "Débit internet insuffisant pour déterminer si la connexion est affectée par le bug d'ONU Free.\n";
   print "  => VERIFIER QUE RIEN D'AUTRE NE CONSOMME DE LA BANDE PASSANTE ET RELANCER LE TEST\n";
-}elsif($internetSpeed < 38 * 1024 ** 2) {
+}elsif($internetSpeedMB < 38) {
   print "/!\\ La connexion semble affectée par le bug d'ONU Free /!\\\n";
-}elsif($internetSpeed < 43 * 1024 ** 2) {
+}elsif($internetSpeedMB < 43) {
   print "La connexion POURRAIT être affectée par le bug d'ONU Free (débit internet légèrement supérieur au débit habituel pour les connexions affectées).\n";
-  print "  => RELANCER LE TEST POUR CONFIRMER LE DEBIT INTERNET\n";
-}else{
+  print "  => VERIFIER QUE RIEN D'AUTRE NE CONSOMME DE LA BANDE PASSANTE ET RELANCER LE TEST POUR CONFIRMER LE DEBIT INTERNET\n";
+}elsif($internetSpeedMB < 70) {
   print "La connexion ne semble pas affectée par le bug d'ONU Free (débit internet supérieur au débit habituel pour les connexions affectées).\n";
+}else{
+  print "La connexion n'est pas affectée par le bug d'ONU Free (débit internet normal).\n";
 }
 quit();
