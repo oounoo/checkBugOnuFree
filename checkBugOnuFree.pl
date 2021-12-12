@@ -8,7 +8,10 @@ use utf8;
 use HTTP::Tiny;
 use Time::HiRes 'time';
 
-my $VERSION=0.1;
+my $VERSION=0.2;
+
+my $lanUrl='http://212.27.38.253:8095/fixed/1G';
+my $wanUrl='http://scaleway.testdebit.info/1G/1G.iso';
 
 my $osIsWindows=$^O eq 'MSWin32';
 
@@ -78,7 +81,7 @@ exit unless(defined <STDIN>);
 
 print "Test de débit local...\n";
 $httpClient->{timeout}=2;
-my $localSpeed=1024 ** 3 / getDlTime("http://212.27.38.253:8095/fixed/1G");
+my $localSpeed=1024 ** 3 / getDlTime($lanUrl);
 print '  --> '.readableDlSpeed($localSpeed)."\n";
 
 if($localSpeed < 70 * 1024 ** 2) {
@@ -88,15 +91,15 @@ if($localSpeed < 70 * 1024 ** 2) {
 
 print "Test de débit Internet...\n";
 $httpClient->{timeout}=10;
-my $internetSpeed=1024 ** 3 / getDlTime("http://scaleway.testdebit.info/1G/1G.iso");
+my $internetSpeed=1024 ** 3 / getDlTime($wanUrl);
 print '  --> '.readableDlSpeed($internetSpeed)."\n\n";
 
 if($internetSpeed < 20 * 1024 ** 2) {
   print "Débit internet insuffisant pour déterminer si la connexion est affectée par le bug d'ONU Free.\n";
   print "  => VERIFIER QUE RIEN D'AUTRE NE CONSOMME DE LA BANDE PASSANTE ET RELANCER LE TEST\n";
-}elsif($internetSpeed < 35 * 1024 ** 2) {
+}elsif($internetSpeed < 38 * 1024 ** 2) {
   print "/!\\ La connexion semble affectée par le bug d'ONU Free /!\\\n";
-}elsif($internetSpeed < 40 * 1024 ** 2) {
+}elsif($internetSpeed < 43 * 1024 ** 2) {
   print "La connexion POURRAIT être affectée par le bug d'ONU Free (débit internet légèrement supérieur au débit habituel pour les connexions affectées).\n";
   print "  => RELANCER LE TEST POUR CONFIRMER LE DEBIT INTERNET\n";
 }else{
