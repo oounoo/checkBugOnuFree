@@ -9,7 +9,7 @@ use HTTP::Tiny;
 use Time::HiRes 'time';
 use Time::Piece;
 
-my $VERSION=0.6;
+my $VERSION='0.7';
 
 my $lanUrl='http://212.27.38.253:8095/fixed/1G';
 my %wanBbrUrls=(AS12876 => 'http://ipv4.scaleway.testdebit.info/1G.iso',
@@ -20,19 +20,31 @@ my %wanCubicUrls=(AS12876 => 'http://ping.online.net/1000Mo.dat',
 my $osIsWindows=$^O eq 'MSWin32';
 
 my %options;
-my %cmdOpts=('skip-update-check' => ['Désactive la vérification de disponibilité de nouvelle version','u'],
-             'skip-intro' => ["Désactive le message d'introduction et démarre immédiatement les tests",'i'],
-             'no-diag' => ['Désactive le diagnostique automatique (tests de débit uniquement)','d'],
-             'skip-lan-check' => ['Désactive la vérification du débit local à partir de la Freebox (tests de débit Internet uniquement)','l'],
+my %cmdOpts=('skip-update-check' => ['Désactive la vérification de disponibilité de nouvelle version','U'],
+             'skip-intro' => ["Désactive le message d'introduction et démarre immédiatement les tests",'I'],
+             'no-diag' => ['Désactive le diagnostique automatique (tests de débit uniquement)','D'],
+             'skip-lan-check' => ['Désactive la vérification du débit local à partir de la Freebox (tests de débit Internet uniquement)','L'],
              'alternate-srv' => ['Change de serveur pour les tests de débit (AS5410 "Bouygues Telecom" à la place de AS12876 "Scaleway")','a'],
              help => ["Affiche l'aide",'h'],
              version => ['Affiche la version','v']);
 my %cmdOptsAliases = map {$cmdOpts{$_}[1] => $_} (keys %cmdOpts);
 
+my $timestampPrinted;
+sub printTimestampLine { 
+  my $gmTime=gmtime()->strftime('%F %T').' GMT';
+  my $timestampPadding='-' x (int(77-length($gmTime))/2);
+  print "$timestampPadding $gmTime $timestampPadding\n";
+  $timestampPrinted=1;
+}
+
 sub quit {
   my $msg=shift;
   print "$msg\n" if(defined $msg);
-  print "\n";
+  if($timestampPrinted) {
+    printTimestampLine();
+  }else{
+    print "\n";
+  }
   if($osIsWindows) {
     print "Appuyer sur Entrée pour quitter...\n";
     <STDIN>;
@@ -50,6 +62,14 @@ if($osIsWindows) {
   $osName=Win32::GetOSDisplayName();
 }else{
   eval "use open ':std', ':encoding(utf8)'";
+  require POSIX;
+  my @uname=POSIX::uname();
+  my ($sysName,$sysRelease,$sysArch)=@uname[0,2,4];
+  if($sysName) {
+    $osName=$sysName;
+    $osName.=" $sysRelease" if($sysRelease);
+    $osName.=" ($sysArch)" if($sysArch);
+  }
 }
 
 sub usage {
@@ -114,21 +134,24 @@ sub readableDlSpeed {
   return sprintf('%.2f',$speed).' '.$units[$unitIdx].'o/s';
 }
 
-if(! $options{'skip-update-check'} && $VERSION =~ /^\d+\.\d+/) {
+if(! $options{'skip-update-check'} && $VERSION =~ /^(\d+)\.(\d+)$/) {
+  my ($currentVersionMajor,$currentVersionMinor)=($1,$2);
   $httpClient->{timeout}=10;
   my $result=$httpClient->get('http://checkbugonu.royalwebhosting.net/LATEST');
   if($result->{success}) {
     my $newVersion=$result->{content};
-    if($newVersion =~ /^(\d+\.\d+)$/) {
-      $newVersion=$1;
-      if($newVersion > $VERSION) {
-        print +('-' x 80)."\n";
+    if($newVersion =~ /^(\d+)\.(\d+)$/) {
+      my ($latestVersionMajor,$latestVersionMinor)=($1,$2);
+      $newVersion="$latestVersionMajor.$latestVersionMinor";
+      if($latestVersionMajor > $currentVersionMajor
+         || ($latestVersionMajor == $currentVersionMajor && $latestVersionMinor > $currentVersionMinor)) {
+        print +('-' x 79)."\n";
         print "Une nouvelle version de checkBugOnuFree est disponible ($newVersion)\n";
         print "Vous utilisez actuellement la version $VERSION\n";
         print "Vous pouvez télécharger la dernière version à partir du lien ci-dessous:\n";
         print '  https://github.com/oounoo/checkBugOnuFree/releases/latest/download/checkBugOnuFree.'.($0 =~ /\.exe$/i ? 'exe' : 'pl')."\n";
-        print "Vous pouvez désactiver la vérification de version avec le paramètre --skip-update-check (-u)\n";
-        print +('-' x 80)."\n";
+        print "Vous pouvez désactiver la vérification de version avec le paramètre --skip-update-check (-U)\n";
+        print +('-' x 79)."\n";
         print "Appuyer sur Ctrl-c pour quitter, ou Entrée pour continuer avec votre version actuelle.\n";
         exit unless(defined <STDIN>);
       }
@@ -142,14 +165,14 @@ if(! $options{'skip-update-check'} && $VERSION =~ /^\d+\.\d+/) {
 
 if(! $options{'skip-intro'}) {
   print <<EOT;
-================================================================================
+===============================================================================
 CheckBugOnuFree
 ---------------
 Programme de diagnostique de connexion FTTH Free avec boîtier ONU
 
-Ce programme effectue différents tests de débit en mono-session TCP afin
-d'évaluer la possibilité que la connexion FTTH soit affectée par un
-dysfonctionnement du boîtier ONU Free.
+Ce programme effectue des tests de débit en mono-session TCP afin d'évaluer la
+possibilité que la connexion FTTH soit affectée par un dysfonctionnement du
+boîtier ONU Free.
 Il est aussi possible d'utiliser ce programme sur une infrastructure sans
 Freebox pour comparer les résultats, à condition de désactiver le test de débit
 local via le paramètre --skip-lan-check (voir --help pour plus d'information).
@@ -157,17 +180,19 @@ local via le paramètre --skip-lan-check (voir --help pour plus d'information).
 Avant de continuer, veuillez vérifier que rien d'autre ne consomme de la bande
 passante sur le réseau (ordinateurs, Freebox player, télévision...), ni du CPU
 sur le système de test (mises à jour automatiques, antivirus...).
-================================================================================
+===============================================================================
 Appuyer sur Entrée pour continuer (ou Ctrl-C pour annuler)...
 EOT
   exit unless(defined <STDIN>);
 }
 
-my $srvAs = $options{'alternate-srv'} ? 'AS5410' : 'AS12876';
-my ($wanBbrUrl,$wanCubicUrl)=($wanBbrUrls{$srvAs},$wanCubicUrls{$srvAs});
+my $cbofTag="[checkBugOnuFree v$VERSION]";
+my $osNamePaddingLength=79-length($cbofTag)-length($osName);
+$osNamePaddingLength=1 if($osNamePaddingLength < 1);
+print "\n".$cbofTag.(' ' x $osNamePaddingLength).$osName."\n";
 
-my $gmTime=gmtime()->strftime('%F %T');
-print "\n[checkBugOnuFree v$VERSION] [$osName] [$gmTime GMT]\n";
+printTimestampLine();
+
 if(! $options{'skip-lan-check'}) {
   print "Test de débit local (vérification de la fiabilité du système de test)...\n";
   $httpClient->{timeout}=2;
@@ -178,6 +203,9 @@ if(! $options{'skip-lan-check'}) {
     quit("  => VERIFIER QU'UNE LIAISON FILAIRE EST UTILISEE ET QUE RIEN D'AUTRE NE CONSOMME DE LA BANDE PASSANTE NI DU CPU SUR LE SYSTEME, PUIS RELANCER LE TEST");
   }
 }
+
+my $srvAs = $options{'alternate-srv'} ? 'AS5410' : 'AS12876';
+my ($wanBbrUrl,$wanCubicUrl)=($wanBbrUrls{$srvAs},$wanCubicUrls{$srvAs});
 
 print "Test de débit Internet ($srvAs-BBR)...\n";
 $httpClient->{timeout}=10;
