@@ -13,7 +13,7 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.8';
+my $VERSION='0.9';
 my $PROGRAM_NAME='checkBugOnuFree';
 
 my %TEST_DATA = ( 'local' => ['212.27.38.253',8095,'fixed/10G',2,10],
@@ -23,7 +23,7 @@ my %TEST_DATA = ( 'local' => ['212.27.38.253',8095,'fixed/10G',2,10],
                                             CUBIC => ['ipv4.bouygues.testdebit.info',80,'10G.iso',10,50]} } );
 
 my $MTU=1500;
-my $MSS=$MTU-52;
+my $MSS=$MTU-40;
 my $TCP_EFFICIENCY=$MSS/($MTU+38);
 my $GOODPUT_1Gbps_Bytes=1_000_000_000* $TCP_EFFICIENCY / 8;
 my $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH=15;
@@ -139,7 +139,10 @@ sub checkForNewVersion {
       print "[!] Impossible de vérifier si une nouvelle version est disponible (valeur de nouvelle version invalide \"$newVersion\")\n";
     }
   }else{
-    print "[!] Impossible de vérifier si une nouvelle version est disponible (HTTP status: $result->{status}, reason: $result->{reason})\n";
+    my $errorDetail = $result->{status} == 599 ? $result->{content} : "HTTP status: $result->{status}, reason: $result->{reason}";
+    $errorDetail=~s/\x{0092}/'/g if($osIsWindows);
+    chomp($errorDetail);
+    print "[!] Impossible de vérifier si une nouvelle version est disponible ($errorDetail)\n";
   }
 }
 
@@ -195,10 +198,34 @@ sub getTcpConf {
   my ($tcpConfReadCmd,@tcpConfFields);
   if($osIsWindows) {
     $tcpConfReadCmd='powershell.exe Get-NetTCPSetting Internet 2>NUL';
-    @tcpConfFields=qw'AutoTuningLevelLocal AutoTuningLevelGroupPolicy AutoTuningLevelEffective ScalingHeuristics';
+    @tcpConfFields=qw'
+        AutoTuningLevelEffective
+        AutoTuningLevelGroupPolicy
+        AutoTuningLevelLocal
+        CongestionProvider
+        EcnCapability
+        ScalingHeuristics
+        Timestamps';
+    my @networkCategories=`powershell.exe "(Get-NetIPConfiguration -Detailed | Where-Object {\$_.NetProfile.IPv4Connectivity -eq \\"Internet\\"}).NetProfile.NetworkCategory" 2>NUL`;
+    if(@networkCategories) {
+      map {chomp($_)} @networkCategories;
+      $tcpConf{NetworkCategory}=join(',',@networkCategories);
+    }
   }elsif(my $sysctlBin=findSysctlBin()) {
     $tcpConfReadCmd="$sysctlBin -a 2>/dev/null";
-    @tcpConfFields=qw'net.ipv4.tcp_rmem net.core.rmem_max net.ipv4.tcp_adv_win_scale';
+    @tcpConfFields=qw'
+        net.core.default_qdisc
+        net.core.rmem_max
+        net.core.wmem_max
+        net.ipv4.tcp_adv_win_scale
+        net.ipv4.tcp_congestion_control
+        net.ipv4.tcp_mem
+        net.ipv4.tcp_no_metrics_save
+        net.ipv4.tcp_rmem
+        net.ipv4.tcp_sack
+        net.ipv4.tcp_timestamps
+        net.ipv4.tcp_window_scaling
+        net.ipv4.tcp_wmem';
   }else{
     return;
   }
@@ -237,80 +264,105 @@ sub findSysctlBin {
 my ($rcvWindow,$rmemMaxParam,$rmemMaxValuePrefix,$tcpAdvWinScale,$degradedTcpConf);
 sub tcpConfAnalysis {
   if(%tcpConf) {
-    print "Paramétrage actuel de la mémoire tampon de réception TCP:\n";
+    print "Paramétrage réseau actuel du système:\n";
     map {print "  $_: $tcpConf{$_}\n"} (sort keys %tcpConf);
-    if(defined $tcpConf{AutoTuningLevelLocal} && $tcpConf{AutoTuningLevelLocal} ne 'Normal') {
-      $degradedTcpConf=1;
-      print "[!] La valeur actuelle de AutoTuningLevelLocal peut dégrader les performances\n";
-      if($options{'detailed-diag'}) {
-        print "    Recommandation: ajuster le paramètre avec l'une des deux commandes suivantes\n";
-        print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal\n";
-        print "      [cmd.exe] netsh interface tcp set global autotuninglevel=normal\n";
-      }
-    }elsif(defined $tcpConf{AutoTuningLevelGroupPolicy} && $tcpConf{AutoTuningLevelGroupPolicy} ne 'Normal') {
-      $degradedTcpConf=1;
-      print "[!] La stratégie de groupe appliquée aux paramètres AutoTuningLevelEffective et AutoTuningLevelGroupPolicy peut dégrader les performances\n";
-      if($options{'detailed-diag'}) {
-        print "    Recommandation: effectuer l'une des deux actions suivantes\n";
-        print "      - configurer la valeur du paramètre AutoTuningLevelGroupPolicy à \"Normal\" dans la stratégie de groupe\n";
-        print "      - utiliser la configuration locale pour ce paramètre (configurer le valeur du paramètre AutoTuningLevelEffective à \"Local\")\n";
-      }
-    }
-    if(defined $tcpConf{ScalingHeuristics} && $tcpConf{ScalingHeuristics} ne 'Disabled') {
-      $degradedTcpConf=1;
-      print "[!] La valeur actuelle de ScalingHeuristics peut dégrader les performances\n";
-      if($options{'detailed-diag'}) {
-        print "    Recommandation: ajuster le paramètre avec une des deux commandes suivantes\n";
-        print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -ScalingHeuristics Disabled\n";
-        print "      [cmd.exe] netsh interface tcp set heuristics disabled\n";
-      }
-    }
-    my $rmemMax;
-    if(defined $tcpConf{'net.core.rmem_max'}) {
-      if($tcpConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
-        ($rmemMax,$rmemMaxParam)=($1,'net.core.rmem_max');
-      }else{
-        print "[!] Valeur de net.core.rmem_max non reconnue\n";
-      }
-    }
-    if(defined $tcpConf{'net.ipv4.tcp_rmem'}) {
-      if($tcpConf{'net.ipv4.tcp_rmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
-        ($rmemMax,$rmemMaxParam,$rmemMaxValuePrefix)=($3,'net.ipv4.tcp_rmem',"$1 $2 ");
-      }else{
-        print "[!] Valeur de net.ipv4.tcp_rmem non reconnue\n";
-      }
-    }
-    if(defined $tcpConf{'net.ipv4.tcp_adv_win_scale'}) {
-      if($tcpConf{'net.ipv4.tcp_adv_win_scale'} =~ /^\s*(-?\d+)\s*$/ && $&) {
-        $tcpAdvWinScale=$1;
-      }else{
-        print "[!] Valeur de net.ipv4.tcp_adv_win_scale non reconnue\n";
-      }
-    }
-    if(defined $rmemMax) {
-      if(defined $tcpAdvWinScale) {
-        my $overHeadFactor=2 ** abs($tcpAdvWinScale);
-        $rcvWindow=$rmemMax/$overHeadFactor;
-        $rcvWindow=$rmemMax-$rcvWindow if($tcpAdvWinScale > 0);
-        my $maxRttMsFor1Gbps = int($rcvWindow * 1000 / $GOODPUT_1Gbps_Bytes + 0.5);
-        print "  => Latence TCP max pour une réception à 1 Gbps: ${maxRttMsFor1Gbps} ms\n";
-        if($maxRttMsFor1Gbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
-          if($tcpAdvWinScale < -3) {
-            print "[!] Les valeurs actuelles de net.ipv4.tcp_adv_win_scale et $rmemMaxParam peuvent dégrader les performances\n";
-          }else{
-            print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
-            if($options{'detailed-diag'}) {
-              print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
-              print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
-            }
+    if($osIsWindows) {
+      if(defined $tcpConf{AutoTuningLevelLocal}) {
+        applyWindowsAutoTuningLevel('AutoTuningLevelLocal');
+        if($tcpConf{AutoTuningLevelLocal} ne 'Normal') {
+          print "[!] La valeur actuelle de AutoTuningLevelLocal peut dégrader les performances\n";
+          if($options{'detailed-diag'}) {
+            print "    Recommandation: ajuster le paramètre avec l'une des deux commandes suivantes\n";
+            print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -AutoTuningLevelLocal Normal\n";
+            print "      [cmd.exe] netsh interface tcp set global autotuninglevel=normal\n";
           }
         }
-      }else{
-        print "[!] Valeur de net.ipv4.tcp_adv_win_scale non trouvée\n";
+      }elsif(defined $tcpConf{AutoTuningLevelGroupPolicy}) {
+        applyWindowsAutoTuningLevel('AutoTuningLevelGroupPolicy');
+        if($tcpConf{AutoTuningLevelGroupPolicy} ne 'Normal') {
+          print "[!] La stratégie de groupe appliquée aux paramètres AutoTuningLevelEffective et AutoTuningLevelGroupPolicy peut dégrader les performances\n";
+          if($options{'detailed-diag'}) {
+            print "    Recommandation: effectuer l'une des deux actions suivantes\n";
+            print "      - configurer la valeur du paramètre AutoTuningLevelGroupPolicy à \"Normal\" dans la stratégie de groupe\n";
+            print "      - utiliser la configuration locale pour ce paramètre (configurer le valeur du paramètre AutoTuningLevelEffective à \"Local\")\n";
+          }
+        }
+      }
+      if(defined $tcpConf{ScalingHeuristics} && $tcpConf{ScalingHeuristics} ne 'Disabled') {
+        $degradedTcpConf=1;
+        print "[!] La valeur actuelle de ScalingHeuristics peut dégrader les performances\n";
+        if($options{'detailed-diag'}) {
+          print "    Recommandation: ajuster le paramètre avec une des deux commandes suivantes\n";
+          print "      [PowerShell] Set-NetTCPSetting -SettingName Internet -ScalingHeuristics Disabled\n";
+          print "      [cmd.exe] netsh interface tcp set heuristics disabled\n";
+        }
+      }
+    }else{
+      my $rmemMax;
+      if(defined $tcpConf{'net.core.rmem_max'}) {
+        if($tcpConf{'net.core.rmem_max'} =~ /^\s*(\d+)\s*$/) {
+          ($rmemMax,$rmemMaxParam)=($1,'net.core.rmem_max');
+        }else{
+          print "[!] Valeur de net.core.rmem_max non reconnue\n";
+        }
+      }
+      if(defined $tcpConf{'net.ipv4.tcp_rmem'}) {
+        if($tcpConf{'net.ipv4.tcp_rmem'} =~ /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/) {
+          ($rmemMax,$rmemMaxParam,$rmemMaxValuePrefix)=($3,'net.ipv4.tcp_rmem',"$1 $2 ");
+        }else{
+          print "[!] Valeur de net.ipv4.tcp_rmem non reconnue\n";
+        }
+      }
+      if(defined $tcpConf{'net.ipv4.tcp_adv_win_scale'}) {
+        if($tcpConf{'net.ipv4.tcp_adv_win_scale'} =~ /^\s*(-?\d+)\s*$/ && $&) {
+          $tcpAdvWinScale=$1;
+        }else{
+          print "[!] Valeur de net.ipv4.tcp_adv_win_scale non reconnue\n";
+        }
+      }
+      if(defined $rmemMax) {
+        if(defined $tcpAdvWinScale) {
+          my $overHeadFactor=2 ** abs($tcpAdvWinScale);
+          $rcvWindow=$rmemMax/$overHeadFactor;
+          $rcvWindow=$rmemMax-$rcvWindow if($tcpAdvWinScale > 0);
+        }else{
+          print "[!] Valeur de net.ipv4.tcp_adv_win_scale non trouvée\n";
+        }
+      }
+    }
+    if(defined $rcvWindow) {
+      my $maxRttMsFor1Gbps = int($rcvWindow * 1000 / $GOODPUT_1Gbps_Bytes + 0.5);
+      print "  => Latence TCP max pour une réception à 1 Gbps: ${maxRttMsFor1Gbps} ms\n";
+      if(! $osIsWindows && $maxRttMsFor1Gbps < $RECOMMENDED_MIN_RTT_MAX_FOR_FULL_BANDWIDTH) {
+        if($tcpAdvWinScale < -3) {
+          print "[!] Les valeurs actuelles de net.ipv4.tcp_adv_win_scale et $rmemMaxParam peuvent dégrader les performances\n";
+        }else{
+          print "[!] La valeur actuelle de $rmemMaxParam peut dégrader les performances\n";
+          if($options{'detailed-diag'}) {
+            print "    Recommandation: ajuster le paramètre avec la commande suivante\n";
+            print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($RECOMMENDED_MIN_RCV_WINDOW_SIZE)."\n";
+          }
+        }
       }
     }
   }else{
-    print "[!] Echec de lecture des paramètres TCP\n";
+    print "[!] Echec de lecture des paramètres réseau du système\n";
+  }
+}
+
+my %windowsAutoTuningLevels=(Disabled => 0,
+                             HighlyRestricted => 2,
+                             Restricted => 4,
+                             Normal => 8,
+                             Experimental => 14);
+sub applyWindowsAutoTuningLevel {
+  my $autoTuningParam=shift;
+  my $autoTuningLevel=$tcpConf{$autoTuningParam};
+  if(exists $windowsAutoTuningLevels{$autoTuningLevel}) {
+    $rcvWindow=65535*2**$windowsAutoTuningLevels{$autoTuningLevel};
+  }else{
+    print "[!] Valeur de $autoTuningParam non reconnue\n";
+    $degradedTcpConf=1;
   }
 }
 
@@ -402,7 +454,7 @@ sub checkMaxThroughputForLatency {
   my $maxThroughput=$rcvWindow*1000/$latency;
   if($maxThroughput < $GOODPUT_1Gbps_Bytes) {
     print "[!] Avec cette latence, le paramétrage actuel de mémoire tampon TCP pourrait limiter le débit à environ ".readableDlSpeed($maxThroughput)."\n";
-    if($options{'detailed-diag'} && $tcpAdvWinScale > -4) {
+    if(! $osIsWindows && $options{'detailed-diag'} && $tcpAdvWinScale > -4) {
       print "    Recommandation: si la latence estimée est correcte, augmenter la mémoire tampon max avec la commande suivante\n";
       print "      sysctl -w $rmemMaxParam=".rcvWindowToRmemValue($GOODPUT_1Gbps_Bytes*$latency/1000)."\n";
     }
@@ -449,6 +501,8 @@ sub getDlSpeed {
     return wantarray() ? ($dlSpeed,\@chunkDlSpeeds) : $dlSpeed;
   }else{
     my $errorDetail = $result->{status} == 599 ? $result->{content} : "HTTP status: $result->{status}, reason: $result->{reason}";
+    $errorDetail=~s/\x{0092}/'/g if($osIsWindows);
+    chomp($errorDetail);
     quit("[!] Echec de téléchargement de \"$url\" ($errorDetail)");
   }
 }
