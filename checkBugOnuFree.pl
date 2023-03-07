@@ -13,8 +13,9 @@ require Net::Ping;
 require POSIX;
 require Time::Piece;
 
-my $VERSION='0.9';
+my $VERSION='0.10';
 my $PROGRAM_NAME='checkBugOnuFree';
+my $NEW_PROGRAM_NAME='checkFtthFree';
 
 my %TEST_DATA = ( 'local' => ['212.27.38.253',8095,'fixed/10G',2,10],
                   Internet => { AS12876 => { BBR => ['ipv4.scaleway.testdebit.info',80,'10G.iso',10,50],
@@ -114,36 +115,17 @@ sub printTimestampLine {
 }
 
 sub checkForNewVersion {
-  return unless($VERSION =~ /^(\d+)\.(\d+)$/);
-  my ($currentVersionMajor,$currentVersionMinor)=($1,$2);
-  $httpClient->{timeout}=10;
-  my $result=$httpClient->get('http://checkbugonu.royalwebhosting.net/LATEST');
-  if($result->{success}) {
-    my $newVersion=$result->{content};
-    if($newVersion =~ /^(\d+)\.(\d+)$/) {
-      my ($latestVersionMajor,$latestVersionMinor)=($1,$2);
-      $newVersion="$latestVersionMajor.$latestVersionMinor";
-      if($latestVersionMajor > $currentVersionMajor
-         || ($latestVersionMajor == $currentVersionMajor && $latestVersionMinor > $currentVersionMinor)) {
-        print +('-' x 79)."\n";
-        print "Une nouvelle version de $PROGRAM_NAME est disponible ($newVersion)\n";
-        print "Vous utilisez actuellement la version $VERSION\n";
-        print "Vous pouvez télécharger la dernière version à partir du lien ci-dessous:\n";
-        print '  https://github.com/oounoo/$PROGRAM_NAME/releases/latest/download/$PROGRAM_NAME.'.($0 =~ /\.exe$/i ? 'exe' : 'pl')."\n";
-        print "Vous pouvez désactiver la vérification de version avec le paramètre --skip-update-check (-U)\n";
-        print +('-' x 79)."\n";
-        print "Appuyer sur Ctrl-c pour quitter, ou Entrée pour continuer avec votre version actuelle.\n";
-        exit unless(defined <STDIN>);
-      }
-    }else{
-      print "[!] Impossible de vérifier si une nouvelle version est disponible (valeur de nouvelle version invalide \"$newVersion\")\n";
-    }
-  }else{
-    my $errorDetail = $result->{status} == 599 ? $result->{content} : "HTTP status: $result->{status}, reason: $result->{reason}";
-    $errorDetail=~s/\x{0092}/'/g if($osIsWindows);
-    chomp($errorDetail);
-    print "[!] Impossible de vérifier si une nouvelle version est disponible ($errorDetail)\n";
-  }
+  print +('-' x 79)."\n";
+  print "Le programme $PROGRAM_NAME est devenu obsolète car le dysfonctionnement du\n";
+  print "boîtier ONU Free est corrigé depuis le 31/03/2022.\n";
+  print "Ce programme a été remplacé par $NEW_PROGRAM_NAME, qui possède des fonctionnalités\n";
+  print "supplémentaires.\n";
+  print "Vous pouvez télécharger $NEW_PROGRAM_NAME à partir du lien ci-dessous:\n";
+  print "  https://github.com/Yaribz/$NEW_PROGRAM_NAME/releases/latest/download/$NEW_PROGRAM_NAME.".($0 =~ /\.exe$/i ? 'exe' : 'pl')."\n";
+  print "Vous pouvez désactiver ce message avec le paramètre --skip-update-check (-U)\n";
+  print +('-' x 79)."\n";
+  print "Appuyer sur Ctrl-c pour quitter, ou Entrée pour continuer malgré tout avec $PROGRAM_NAME.\n";
+  exit unless(defined <STDIN>);
 }
 
 sub printIntroMsg {
